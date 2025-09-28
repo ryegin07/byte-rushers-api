@@ -69,3 +69,4 @@ typings/
 api.zip
 
 /public/uploads/*
+/logs/*

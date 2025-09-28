@@ -152,7 +152,7 @@ export class SubmissionController {
 
   private async maybeSendSms(sub: Submission) {
     try {
-      const enabled = (process.env.SMS_ENABLED || 'false').toLowerCase() === 'true';
+      const enabled = (process.env.SMS_ENABLED || 'true').toLowerCase() === 'true';
       if (!enabled) return;
       if (!(sub as any).smsNotifications || !sub.phone) return;
       if (!sub.submissionType || sub.submissionType.toLowerCase() !== 'complaint') return;
