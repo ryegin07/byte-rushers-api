@@ -44,6 +44,12 @@ export class User extends Entity {
   @property({ type: 'string' })
   barangayHall?: string;
 
+
+  @property({ type: 'string', jsonSchema: {nullable: true} })
+  resetCode?: string;
+
+  @property({ type: 'string', jsonSchema: {format: 'date-time', nullable: true} })
+  resetCodeExpiresAt?: string;
   constructor(data?: Partial<User>) { super(data); }
 }
 

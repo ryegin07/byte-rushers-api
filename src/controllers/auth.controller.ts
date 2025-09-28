@@ -1,6 +1,10 @@
 import {repository} from '@loopback/repository';
-import {post, requestBody, get, Response, RestBindings} from '@loopback/rest';
-import {inject} from '@loopback/core';
+import {inject, service} from '@loopback/core';
+import {get, post, requestBody, Response, RestBindings} from '@loopback/rest';
+import {MailerService} from '../services/mailer.service';
+
+
+
 import {UserRepository} from '../repositories/user.repository';
 import {User} from '../models/user.model';
 import * as bcrypt from 'bcryptjs';
@@ -12,7 +16,7 @@ export class AuthController {
   constructor(
     @repository(UserRepository) private userRepo: UserRepository,
     @inject(RestBindings.Http.RESPONSE) private res: Response,
-  ) {}
+    @service(MailerService) private mailer: MailerService) {}
 
   @post('/auth/register')
   async register(
@@ -138,5 +142,30 @@ export class AuthController {
     const parts = header.split(';').map((s: string) => s.trim());
     for (const p of parts) if (p.startsWith(TOKEN_COOKIE + '=')) return p.substring(TOKEN_COOKIE.length + 1);
     return null;
+  }
+  @post('/auth/forgot', {
+    responses: { '200': { description: 'Request accepted' } }
+  })
+  async forgotPassword(
+    @requestBody({
+      required: true,
+      content: {'application/json': { schema: { type: 'object', required: ['email'], properties: { email: { type: 'string' } } } }}
+    }) body: { email: string }
+  ) {
+    const email = body.email?.trim().toLowerCase();
+    if (!email) return { ok: false, message: 'Email is required' };
+
+    const user = await this.userRepo.findOne({ where: { email } });
+    if (!user) { return { ok: true }; } // do not send if not registered
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await this.userRepo.updateById(user.id as any, { resetCode: code, resetCodeExpiresAt: expires });
+
+    const html = `<p>Hello ${user.firstName || ''},</p><p>Your password reset code is: <b>${code}</b></p><p>This code expires in 10 minutes.</p>`;
+    try { await this.mailer.sendMail({ to: email, subject: 'Your password reset code', text: 'Code: ' + code, html }); }
+    catch (_e) { return { ok: false, message: 'Failed to send email' }; }
+
+    return { ok: true };
   }
 }
