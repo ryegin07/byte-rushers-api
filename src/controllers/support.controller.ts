@@ -29,7 +29,7 @@ export class SupportController {
     })
     body: {name: string, email: string, subject?: string, message: string}
   ): Promise<{ok: boolean}> {
-    const to = process.env.SUPPORT_EMAIL || process.env.MAIL_TO || 'vincentsanjoaquin@gmail.com';
+    const to = process.env.SUPPORT_EMAIL || process.env.MAIL_TO || 'vincentsanjoaquin07@gmail.com';
     const subject = (body.subject && body.subject.trim()) ? body.subject.trim() : `[Quick Contact] Message from ${body.name}`;
     const safeMsg = (body.message || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const html = `<p><strong>From:</strong> ${body.name} &lt;${body.email}&gt;</p><p>${safeMsg.replace(/\n/g,'<br/>')}</p>`;
