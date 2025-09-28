@@ -1,3 +1,4 @@
+
 import {inject} from '@loopback/core';
 import {DataObject, repository} from '@loopback/repository';
 import {
@@ -48,23 +49,32 @@ export class SubmissionController {
     })
     submission: Partial<Submission>,
   ): Promise<Submission> {
-    // Determine type first
-    const submissionType = (submission.submissionType ?? 'Complaint').trim();
+    const submissionType = (submission.submissionType || 'Complaint').trim();
 
-    // Only generate IDs for Complaints
-    const complaintId =
-      submissionType.toLowerCase() === 'complaint'
-        ? await this.generateComplaintId()
-        : '';
+    // Generate IDs depending on type
+    let complaintId = '';
+    let documentReqId = (submission as any).documentReqId || '';
+    if (submissionType.toLowerCase() === 'complaint') {
+      complaintId = await this.generateComplaintId();
+    } else if (submissionType.toLowerCase() === 'document') {
+      // Ensure unique documentReqId
+      if (documentReqId) {
+        const exists = await this.submissionRepository.count({ documentReqId } as any);
+        if (exists.count > 0) documentReqId = '';
+      }
+      if (!documentReqId) documentReqId = await this.generateDocumentId();
+    }
 
     const payload: Partial<Submission> = {
       ...submission,
+      phone: submission?.phone ? normalizePH(String(submission.phone)) : submission?.phone,
       submissionType,
       complaintId,
+      documentReqId, // ensure only once
     };
 
     const created = await this.submissionRepository.create(payload as DataObject<Submission>);
-    await this.maybeSendSms(created); // will no-op for Inquiry anyway
+    await this.maybeSendSms(created);
     return created;
   }
 
@@ -82,31 +92,46 @@ export class SubmissionController {
         cb(null, uploadDir),
       filename: (_req: any, file: any, cb: (err: any, filename: string) => void) => {
         const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        const ext = path.extname(file.originalname || '');
-        cb(null, unique + ext);
+        const ext = path.extname(file.originalname);
+        cb(null, `sub-${unique}${ext}`);
       },
     });
-    const upload = multer({ storage }).single('evidence');
+    const upload = multer({ storage }).fields([{ name: 'evidence', maxCount: 1 }, { name: 'file', maxCount: 1 }]);
 
     const fields: any = await new Promise((resolve, reject) => {
       upload(req as any, {} as any, (err: any) => {
         if (err) return reject(err);
-        resolve({ ...((req as any).body ?? {}), file: (req as any).file });
+        resolve({ ...((req as any).body ?? {}), files: (req as any).files });
       });
     });
 
     const submissionType = (fields.submissionType || 'Complaint').trim();
 
-    const complaintId =
-      submissionType.toLowerCase() === 'complaint'
-        ? await this.generateComplaintId()
-        : '';
+    let complaintId = '';
+    let documentReqId = String(fields.documentReqId || '');
+    if (submissionType.toLowerCase() === 'complaint') {
+      complaintId = await this.generateComplaintId();
+    } else if (submissionType.toLowerCase() === 'document') {
+      if (documentReqId) {
+        const exists = await this.submissionRepository.count({ documentReqId } as any);
+        if (exists.count > 0) documentReqId = '';
+      }
+if (!documentReqId) documentReqId = await this.generateDocumentId();
+    }
 
-    const data: DataObject<Submission> = {
-      name: fields.anonymous === 'true' ? 'Anonymous' : (fields.name ?? fields.complainantName),
-      complaintId,
+    
+const files: any = (fields as any).files || {};
+// Choose correct file field based on type
+let selectedFile: any = undefined;
+if (submissionType.toLowerCase() === 'complaint') {
+  selectedFile = Array.isArray(files?.evidence) ? files.evidence[0] : undefined;
+} else if (submissionType.toLowerCase() === 'document') {
+  selectedFile = Array.isArray(files?.file) ? files.file[0] : undefined;
+}
+const data: DataObject<Submission> = {
+      name: fields.anonymous === 'true' ? 'Anonymous' : (fields.name ?? fields.complainantName ?? fields.requestorName),
       email: fields.anonymous === 'true' ? 'anonymous@example.com' : fields.email,
-      phone: fields.phone,
+      phone: fields.phone ? normalizePH(String(fields.phone)) : fields.phone,
       address: fields.address,
       type: fields.type ?? fields.complaintType,
       priority: fields.priority,
@@ -116,12 +141,15 @@ export class SubmissionController {
       message: fields.message ?? fields.description,
       anonymous: fields.anonymous === 'true' || fields.anonymous === true,
       smsNotifications: fields.smsNotifications === 'true' || fields.smsNotifications === true,
-      evidenceUrl: fields.file ? '/uploads/' + fields.file.filename : undefined,
+      evidenceUrl: submissionType.toLowerCase() === 'complaint' && selectedFile ? '/uploads/' + selectedFile.filename : undefined,
+      fileUrl: submissionType.toLowerCase() === 'document' && selectedFile ? '/uploads/' + selectedFile.filename : undefined,
       submissionType,
+      complaintId,
+      documentReqId,
     };
 
     const created = await this.submissionRepository.create(data);
-    await this.maybeSendSms(created); // will no-op for Inquiry
+    await this.maybeSendSms(created);
     return created;
   }
 
@@ -132,13 +160,13 @@ export class SubmissionController {
       'application/json': {
         schema: {
           type: 'array',
-          items: getModelSchemaRef(Submission, {includeRelations: true}),
+          items: getModelSchemaRef(Submission, { includeRelations: true }),
         },
       },
     },
   })
   async find(): Promise<Submission[]> {
-    return this.submissionRepository.find({order: ['createdAt DESC']});
+    return this.submissionRepository.find({ order: ['createdAt DESC'] });
   }
 
   // ---- helpers -------------------------------------------------------------
@@ -150,15 +178,31 @@ export class SubmissionController {
     return `COMP-${year}-${String(seq).padStart(3, '0')}`;
   }
 
+  private async generateDocumentId(): Promise<string> {
+    const seq = await this.counter.next('documentReqId');
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const n = String(seq).padStart(4, '0');
+    return `DOC-${y}${m}-${n}`;
+  }
+
   private async maybeSendSms(sub: Submission) {
     try {
       const enabled = (process.env.SMS_ENABLED || 'true').toLowerCase() === 'true';
       if (!enabled) return;
       if (!(sub as any).smsNotifications || !sub.phone) return;
-      if (!sub.submissionType || sub.submissionType.toLowerCase() !== 'complaint') return;
+      const t = (sub.submissionType || '').toLowerCase();
+      if (t !== 'complaint' && t !== 'document') return;
 
-      const text = `Acknowledging receipt of your submission for ${sub.submissionType} with ID ${sub.complaintId}.`;
-      await this.sms.send(normalizePH(sub.phone), text);
+      const who = (sub as any).name || (sub as any).requestorName || '';
+      const ref = t === 'complaint' ? (sub as any).complaintId : (sub as any).documentReqId;
+      const refText = ref ? ` (${ref})` : '';
+      const text = t === 'complaint'
+        ? `Hi ${who}, your complaint has been received${refText}. We'll keep you posted.`
+        : `Hi ${who}, your document request has been received${refText}. We'll text you updates when it's processing and ready for pickup.`;
+
+      await this.sms.send(sub.phone!, text);
     } catch (e) {
       console.warn('[SubmissionController] Failed to send SMS:', e);
     }
