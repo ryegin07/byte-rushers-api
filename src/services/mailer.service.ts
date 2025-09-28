@@ -17,11 +17,11 @@ export class MailerService {
   private from: string;
 
   constructor() {
-    const host = process.env.SMTP_HOST;
-    const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : undefined;
-    const user = process.env.SMTP_USER;
-    const pass = process.env.SMTP_PASS;
-    this.from = process.env.SMTP_FROM || user || 'no-reply@example.com';
+    const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+    const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 587;
+    const user = process.env.SMTP_USER || 'ryegin07@gmail.com';
+    const pass = process.env.SMTP_PASS || 'wiew vpyg aslk ejns';
+    this.from = process.env.SMTP_FROM || user || 'Byte Rushers <byte-rushers@gmail.com>';
 
     if (host && port && user && pass) {
       this.transporter = nodemailer.createTransport({
