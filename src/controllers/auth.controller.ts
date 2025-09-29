@@ -109,7 +109,7 @@ export class AuthController {
       const payload = jwt.verify(token, this.jwtSecret()) as any;
       const user = await this.userRepo.findById(payload.sub).catch(() => null);
       if (!user) return { authenticated: false };
-      return { authenticated: true, user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, phone: user.phone, address: `${user.houseNumber} ${user.street}, ${user.purok}, ${user.barangayHall}`.toLowerCase().replace(/\b\w/g, char => char.toUpperCase()) } };
+      return { authenticated: true, user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, phone: user.phone, address: `${user.houseNumber} ${user.street}, ${user.purok}, ${user.barangayHall}`.toLowerCase().replace(/\b\w/g, char => char.toUpperCase()), type: (user as any).type || 'resident' } };
     } catch {
       return { authenticated: false };
     }
