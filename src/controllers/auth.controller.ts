@@ -38,7 +38,8 @@ export class AuthController {
           houseNumber: {type:'string'},
           street: {type:'string'},
           purok: {type:'string'},
-          barangayHall: {type:'string'}
+          barangayHall: {type:'string'},
+          userType: {type:'string', enum: ['resident', 'staff']}
         }
       }}}})
     body: any,
@@ -60,6 +61,7 @@ export class AuthController {
       street: body.street,
       purok: body.purok,
       barangayHall: body.barangayHall,
+      userType: body.userType,
     });
     const token = this.signToken(user);
     this.setAuthCookie(token);
