@@ -39,7 +39,7 @@ export class AuthController {
           street: {type:'string'},
           purok: {type:'string'},
           barangayHall: {type:'string'},
-          userType: {type:'string', enum: ['resident', 'staff']}
+          type: {type:'string', enum:['resident','staff']}
         }
       }}}})
     body: any,
@@ -61,11 +61,11 @@ export class AuthController {
       street: body.street,
       purok: body.purok,
       barangayHall: body.barangayHall,
-      userType: body.userType,
+      type: body.type,
     });
     const token = this.signToken(user);
     this.setAuthCookie(token);
-    return { ok: true, user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName } };
+    return { ok: true, user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, type: (user as any).type || 'resident' } };
   }
 
   @post('/auth/login')
@@ -74,18 +74,21 @@ export class AuthController {
       required: true,
       content: {'application/json': { schema: {
         type: 'object',
-        required: ['email','password'],
-        properties: { email: {type:'string', format:'email'}, password: {type:'string'} }
+        required: ['email','password','userType'],
+        properties: { email: {type:'string', format:'email'}, password: {type:'string'}, userType: {type:'string', enum:['resident','staff']} }
       }}}})
-    body: {email: string; password: string},
+    body: {email: string; password: string; userType: 'resident' | 'staff'},
   ) {
     const user = await this.userRepo.findOne({ where: { email: body.email } });
     if (!user) return { ok: false, message: 'Invalid credentials' };
     const ok = await bcrypt.compare(body.password, user.password);
     if (!ok) return { ok: false, message: 'Invalid credentials' };
+    const expectedType = body.userType || 'resident';
+    const userType = (user as any).type || 'resident';
+    if (expectedType !== userType) return { ok: false, message: 'Invalid credentials' };
     const token = this.signToken(user);
     this.setAuthCookie(token);
-    return { ok: true, user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName } };
+    return { ok: true, user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, type: (user as any).type || 'resident' } };
   }
 
   @post('/auth/logout')
@@ -109,7 +112,7 @@ export class AuthController {
   }
 
   private signToken(user: User) {
-    const payload = { sub: user.id, email: user.email };
+    const payload = { sub: user.id, email: user.email, type: (user as any).type || 'resident' };
     return jwt.sign(payload, this.jwtSecret(), { expiresIn: '7d' });
   }
 

@@ -11,6 +11,9 @@ export class User extends Entity {
   @property({ type: 'string', required: true })
   password: string;
 
+  @property({ type: 'string', jsonSchema: { enum: ['resident','staff'] } })
+  type?: 'resident' | 'staff';
+
   @property({ type: 'string' })
   firstName?: string;
 
@@ -50,9 +53,6 @@ export class User extends Entity {
   @property({ type: 'string', jsonSchema: {format: 'date-time', nullable: true} })
   resetCodeExpiresAt?: string;
   constructor(data?: Partial<User>) { super(data); }
-  
-  @property({ type: 'string' })
-  userType?: string;
 }
 
 export type UserWithRelations = User;
