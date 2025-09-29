@@ -63,6 +63,12 @@ export class Submission extends Entity {
   })
   submissionType?: string;
 
+  @property({
+    type: 'string',
+    jsonSchema: { enum: ['pending','completed','active','resolved'] },
+  })
+  status?: string;
+
   // Complaint-specific
   @property({type: 'string'})
   complaintId?: string;

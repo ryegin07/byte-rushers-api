@@ -68,6 +68,7 @@ export class SubmissionController {
     const payload: Partial<Submission> = {
       ...submission,
       phone: submission?.phone ? normalizePH(String(submission.phone)) : submission?.phone,
+      status: submission?.status,
       submissionType,
       complaintId,
       documentReqId, // ensure only once
@@ -143,6 +144,7 @@ const data: DataObject<Submission> = {
       smsNotifications: fields.smsNotifications === 'true' || fields.smsNotifications === true,
       evidenceUrl: submissionType.toLowerCase() === 'complaint' && selectedFile ? '/uploads/' + selectedFile.filename : undefined,
       fileUrl: submissionType.toLowerCase() === 'document' && selectedFile ? '/uploads/' + selectedFile.filename : undefined,
+      status: fields.status,
       submissionType,
       complaintId,
       documentReqId,
