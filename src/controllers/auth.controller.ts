@@ -299,4 +299,111 @@ export class AuthController {
     return { ok: true };
   }
 
+  // ===== Staff Forgot Password Flow (staffId-based) =====
+  @post('/auth/forgot-staff', {
+    responses: {'200': {description: 'Initiate password reset for staff via staffId'}}
+  })
+  async forgotStaff(
+    @requestBody({
+      required: true,
+      content: {'application/json': {schema: {
+        type:'object',
+        required:['staffId'],
+        properties: { staffId: {type:'string'} }
+      }}},
+    }) body: {staffId: string},
+    @inject(RestBindings.Http.RESPONSE) res: Response,
+  ) {
+    const {staffId} = body;
+    const user = await this.userRepo.findOne({ where: { staffId } });
+    if (!user) return { ok: false, message: 'Staff not found' };
+
+    // Reuse existing logic to create code & ttl
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await this.userRepo.updateById(user.id as any, { resetCode: code, resetCodeExpiresAt: expires } as any);
+
+    try {
+      await this.mailer.sendMail({ to: user.email, subject: 'Your password reset code', text: 'Code: ' + code, html: `<p>Your verification code is <b>${code}</b>. It expires in 15 minutes.</p>` });
+    } catch (_e) {
+      return { ok: false, message: 'Failed to send email' };
+    }
+
+    return { ok: true, expiresAt: expires, ttlSeconds: Math.floor((Date.parse(expires) - Date.now()) / 1000) };
+  }
+
+  @post('/auth/resend-code-staff', {
+    responses: {'200': {description: 'Resend reset code for staff'}}
+  })
+  async resendCodeStaff(
+    @requestBody({
+      required: true,
+      content: {'application/json': {schema: {
+        type:'object',
+        required:['staffId'],
+        properties: { staffId: {type:'string'} }
+      }}},
+    }) body: {staffId: string},
+  ) {
+    const user = await this.userRepo.findOne({ where: { staffId: body.staffId } });
+    if (!user) return { ok: false, message: 'Staff not found' };
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await this.userRepo.updateById(user.id as any, { resetCode: code, resetCodeExpiresAt: expires } as any);
+    try {
+      await this.mailer.sendMail({ to: user.email, subject: 'Your password reset code', text: 'Code: ' + code, html: `<p>Your verification code is <b>${code}</b>. It expires in 15 minutes.</p>` });
+    } catch (_e) { /* swallow */ }
+    return { ok: true, expiresAt: expires };
+  }
+
+  @post('/auth/verify-code-staff', {
+    responses: {'200': {description: 'Verify reset code for staff'}}
+  })
+  async verifyCodeStaff(
+    @requestBody({
+      required: true,
+      content: {'application/json': {schema: {
+        type:'object',
+        required:['staffId','code'],
+        properties: { staffId: {type:'string'}, code: {type:'string'} }
+      }}},
+    }) body: {staffId: string, code: string},
+  ) {
+    const user = await this.userRepo.findOne({ where: { staffId: body.staffId } });
+    if (!user) return { ok: false, message: 'Invalid staff' };
+    if (!user.resetCode || !user.resetCodeExpiresAt) return { ok: false, message: 'No code requested' };
+    if (user.resetCode !== body.code) return { ok: false, message: 'Invalid code' };
+    if (Date.parse(user.resetCodeExpiresAt) < Date.now()) return { ok: false, message: 'Code expired' };
+    return { ok: true };
+  }
+
+  @post('/auth/reset-password-staff', {
+    responses: {'200': {description: 'Reset password for staff using code'}}
+  })
+  async resetPasswordStaff(
+    @requestBody({
+      required: true,
+      content: {'application/json': {schema: {
+        type:'object',
+        required:['staffId','code','password'],
+        properties: { staffId: {type:'string'}, code: {type:'string'}, password: {type:'string'} }
+      }}},
+    }) body: {staffId: string, code: string, password: string}
+  ) {
+    const user = await this.userRepo.findOne({ where: { staffId: body.staffId } });
+    if (!user) return { ok: false, message: 'Invalid staff' };
+    if (!user.resetCode || !user.resetCodeExpiresAt) return { ok: false, message: 'No code requested' };
+    if (user.resetCode !== body.code) return { ok: false, message: 'Invalid code' };
+    if (Date.parse(user.resetCodeExpiresAt) < Date.now()) return { ok: false, message: 'Code expired' };
+
+    const password = body.password ?? '';
+    const valid = password.length >= 8 && /[A-Z]/.test(password) && /[a-z]/.test(password) && /\d/.test(password);
+    if (!valid) return { ok: false, message: 'Password does not meet complexity requirements' };
+
+    const hashed = await bcrypt.hash(password, 10);
+    await this.userRepo.updateById(user.id as any, { password: hashed, resetCode: null as any, resetCodeExpiresAt: null as any } as any);
+    return { ok: true };
+  }
+
 }

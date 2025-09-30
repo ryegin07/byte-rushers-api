@@ -8,6 +8,9 @@ export class User extends Entity {
   @property({ type: 'string', required: true, jsonSchema: { format: 'email' } })
   email: string;
 
+  @property({ type: 'string', jsonSchema: {nullable: true} })
+  staffId?: string;
+
   @property({ type: 'string', required: true })
   password: string;
 
