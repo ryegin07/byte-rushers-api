@@ -79,16 +79,12 @@ export class AuthController {
       }}}})
     body: {email: string; password: string; userType: 'resident' | 'staff'},
   ) {
-    console.log("Login attempt", body);
     const user = await this.userRepo.findOne({ where: { email: body.email } });
-    console.log(user);
     if (!user) return { ok: false, message: 'Invalid credentials' };
     const ok = await bcrypt.compare(body.password, user.password);
-    console.log("Password", ok);
     if (!ok) return { ok: false, message: 'Invalid credentials' };
     const expectedType = body.userType || 'resident';
     const userType = (user as any).type || 'resident';
-    console.log({expectedType, userType});
     if (expectedType !== userType) return { ok: false, message: 'Invalid credentials' };
     const token = this.signToken(user);
     this.setAuthCookie(token);
