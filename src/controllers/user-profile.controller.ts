@@ -52,7 +52,7 @@ export class UserProfileController {
           purok: {type:'string'},
           barangayHall: {type:'string'},
           civilStatus: {type:'string'},
-          dateOfBirth: {type:'string'},
+          birthDate: {type:'string'},
           emergencyContact: {type:'string'},
           emergencyPhone: {type:'string'},
           avatar: {type:'string'},

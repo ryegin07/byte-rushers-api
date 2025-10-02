@@ -79,9 +79,6 @@ occupation?: string;
 address?: string;
 
 @property({type: 'string'})
-dateOfBirth?: string;
-
-@property({type: 'string'})
 emergencyContact?: string;
 
 @property({type: 'string'})
@@ -99,8 +96,8 @@ residentId?: string;
 @property({type: 'date'})
 registrationDate?: string;
 
-  @property({type: 'string'})
-  fullName?: string;
+@property({type: 'string'})
+fullName?: string;
 
   constructor(data?: Partial<User>) { super(data); }
 }
