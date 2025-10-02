@@ -99,6 +99,9 @@ residentId?: string;
 @property({type: 'date'})
 registrationDate?: string;
 
+  @property({type: 'string'})
+  fullName?: string;
+
   constructor(data?: Partial<User>) { super(data); }
 }
 
