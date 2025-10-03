@@ -51,7 +51,18 @@ export class AuthController {
     const hash = await bcrypt.hash(body.password, 10);
     const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const verifyToken = (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 48);
+
+    // Generate sequential residentId like RES-0001
+    let seq = (await this.userRepo.count()).count + 1;
+    let residentId = `RES-${String(seq).padStart(4, '0')}`;
+    // Ensure uniqueness in case of race/holes
+    while (await this.userRepo.findOne({ where: { residentId } })) {
+      seq++;
+      residentId = `RES-${String(seq).padStart(4, '0')}`;
+    }
     const user = await this.userRepo.create({
+      residentId: residentId,
+      registrationDate: new Date().toISOString(),
       email: body.email,
       password: hash,
       firstName: body.firstName,
