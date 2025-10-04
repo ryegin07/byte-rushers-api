@@ -97,10 +97,10 @@ export class UserProfileController {
     }
 
     // Simple scalar updates
-    const scalars = ['firstName','lastName','phone','occupation','houseNumber','street','purok','barangayHall','civilStatus','birthDate','emergencyContact','emergencyPhone','avatar','hall'];
+    const scalars = ['firstName','lastName','phone','occupation','houseNumber','street','purok','barangayHall','civilStatus','birthDate','emergencyContact','emergencyPhone','avatar','hall', 'middleName'];
     for (const k of scalars) {
       if (k in body && typeof body[k] !== 'undefined') update[k] = body[k];
-    }
+    } 
 
     // Compute fullName from firstName/lastName (prefer updated values)
     const firstName = (typeof update.firstName === 'string' ? update.firstName : current.firstName) || '';
