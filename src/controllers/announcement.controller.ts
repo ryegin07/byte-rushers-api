@@ -11,6 +11,33 @@ import {
 import {Announcement} from '../models';
 import {AnnouncementRepository} from '../repositories';
 
+function normalizeForScheduling(input: Partial<Announcement>): Partial<Announcement> {
+  const out: Partial<Announcement> = {...input};
+
+  // Normalize schedule string (only accept non-empty string)
+  const hasSchedule = typeof out.publishedSchedule === 'string' && out.publishedSchedule.trim().length > 0;
+
+  if (hasSchedule) {
+    // RULE: any item with a schedule is NOT published (to be handled by a scheduler later)
+    out.published = false;
+    out.publishedSchedule = new Date(out.publishedSchedule!).toISOString();
+  } else if (out.published === true) {
+    // Publish now ⇒ clear schedule entirely (do not store null)
+    out.published = true;
+    delete out.publishedSchedule;
+  } else {
+    // Draft (unscheduled) ⇒ published=false and no schedule field
+    out.published = false;
+    delete out.publishedSchedule;
+  }
+
+  // Optional: keep `draft` consistent (derived)
+  // draft = !published
+  out.draft = out.published === true ? false : true;
+
+  return out;
+}
+
 export class AnnouncementController {
   constructor(
     @repository(AnnouncementRepository)
@@ -32,27 +59,13 @@ export class AnnouncementController {
     })
     body: Partial<Announcement>,
   ): Promise<Announcement> {
-    const schedule = body.publishedSchedule ?? null;
-
-    if (body.published === true) {
-      body.published = true;
-      body.publishedSchedule = null;
-      body.draft = false;
-    } else if (schedule) {
-      body.published = false;
-      body.publishedSchedule = schedule;
-      body.draft = true; // published=false => draft under your rule
-    } else {
-      body.published = false;
-      body.publishedSchedule = null;
-      body.draft = true;
-    }
+    const normalized = normalizeForScheduling(body);
 
     const nowIso = new Date().toISOString() as any;
-    body.createdAt = nowIso;
-    body.updatedAt = nowIso;
+    normalized.createdAt = nowIso;
+    normalized.updatedAt = nowIso;
 
-    return this.announcementRepository.create(body as Announcement);
+    return this.announcementRepository.create(normalized as Announcement);
   }
 
   @get('/announcements/{id}')
@@ -64,6 +77,7 @@ export class AnnouncementController {
     return this.announcementRepository.findById(id);
   }
 
+  // Drafts = anything not published (includes scheduled ones, per your rule)
   @get('/announcements/drafts')
   @response(200, {
     description: 'List draft announcements (published != true)',
@@ -75,11 +89,31 @@ export class AnnouncementController {
   })
   async listDrafts(): Promise<Announcement[]> {
     return this.announcementRepository.find({
-      // <-- Key change: include false or missing
       where: {published: {neq: true}},
       order: ['updatedAt DESC'],
-      // You can keep fields if you want, but returning full objects is safest for UI:
-      // fields: { id: true, title: true, updatedAt: true, publishedSchedule: true, ... }
+    });
+  }
+
+  // NEW: scheduled list (handy for your future scheduler)
+  // Items that are not published and have a publish date
+  @get('/announcements/scheduled')
+  @response(200, {
+    description: 'List scheduled announcements (published=false AND publishedSchedule present)',
+    content: {
+      'application/json': {
+        schema: {type: 'array', items: getModelSchemaRef(Announcement, {includeRelations: false})},
+      },
+    },
+  })
+  async listScheduled(): Promise<Announcement[]> {
+    return this.announcementRepository.find({
+      where: {
+        and: [
+          {published: false},
+          {publishedSchedule: {neq: undefined}}, // any non-empty schedule (we never store null)
+        ],
+      },
+      order: ['publishedSchedule ASC'],
     });
   }
 
@@ -99,24 +133,7 @@ export class AnnouncementController {
     })
     body: Partial<Announcement>,
   ): Promise<Announcement> {
-    const updates: Partial<Announcement> = {...body};
-    const hasPublished = Object.prototype.hasOwnProperty.call(body, 'published');
-    const hasSchedule = Object.prototype.hasOwnProperty.call(body, 'publishedSchedule');
-
-    if (hasPublished && body.published === true) {
-      updates.published = true;
-      updates.publishedSchedule = null;
-      updates.draft = false;
-    } else if (hasSchedule && body.publishedSchedule) {
-      updates.published = false;
-      updates.publishedSchedule = body.publishedSchedule!;
-      updates.draft = true;
-    } else if (hasPublished && body.published === false && !hasSchedule) {
-      updates.published = false;
-      updates.publishedSchedule = null;
-      updates.draft = true;
-    }
-
+    const updates = normalizeForScheduling(body);
     updates.updatedAt = new Date().toISOString() as any;
 
     await this.announcementRepository.updateById(id, updates);
