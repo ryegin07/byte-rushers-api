@@ -1,4 +1,3 @@
-
 import {inject} from '@loopback/core';
 import {DataObject, repository} from '@loopback/repository';
 import {
@@ -126,19 +125,18 @@ export class SubmissionController {
         const exists = await this.submissionRepository.count({ documentReqId } as any);
         if (exists.count > 0) documentReqId = '';
       }
-if (!documentReqId) documentReqId = await this.generateDocumentId();
+      if (!documentReqId) documentReqId = await this.generateDocumentId();
     }
 
-    
-const files: any = (fields as any).files || {};
-// Choose correct file field based on type
-let selectedFile: any = undefined;
-if (submissionType.toLowerCase() === 'complaint') {
-  selectedFile = Array.isArray(files?.evidence) ? files.evidence[0] : undefined;
-} else if (submissionType.toLowerCase() === 'document') {
-  selectedFile = Array.isArray(files?.file) ? files.file[0] : undefined;
-}
-const data: DataObject<Submission> = {
+    const files: any = (fields as any).files || {};
+    // Choose correct file field based on type
+    let selectedFile: any = undefined;
+    if (submissionType.toLowerCase() === 'complaint') {
+      selectedFile = Array.isArray(files?.evidence) ? files.evidence[0] : undefined;
+    } else if (submissionType.toLowerCase() === 'document') {
+      selectedFile = Array.isArray(files?.file) ? files.file[0] : undefined;
+    }
+    const data: DataObject<Submission> = {
       name: fields.anonymous === 'true' ? 'Anonymous' : (fields.name ?? fields.complainantName ?? fields.requestorName),
       email: fields.anonymous === 'true' ? 'anonymous@example.com' : fields.email,
       phone: fields.phone ? normalizePH(String(fields.phone)) : fields.phone,
@@ -219,9 +217,6 @@ const data: DataObject<Submission> = {
     }
   }
 
-
-
-  
   @post('/submissions/{id}/status')
   @response(200, {
     description: 'Update submission status',
@@ -244,7 +239,7 @@ const data: DataObject<Submission> = {
     return this.submissionRepository.findById(id);
   }
 
-@get('/submissions/{id}/qr')
+  @get('/submissions/{id}/qr')
   @response(200, {
     description: 'QR code PNG for a Document submission',
     content: {'image/png': {schema: {type: 'string', format: 'binary'}}},
@@ -279,6 +274,63 @@ const data: DataObject<Submission> = {
     return png;
   }
 
+  @get('/submissions/document/{code}')
+  @response(200, {
+    description: 'Verify a document submission by code (documentReqId or id)',
+    content: {'application/json': {schema: {type:'object'}}},
+  })
+  async verifyDocument(
+    @param.path.string('code') code: string,
+  ): Promise<object> {
+    // Try by documentReqId first, then by id
+    const whereAny: any = {
+      or: [{documentReqId: code}, {id: code}],
+      submissionType: {inq: ['Document','document','DOCUMENT']},
+    };
+    const sub = await this.submissionRepository.findOne({where: whereAny});
+    if (!sub) {
+      return { ok: false, message: 'Document not found' };
+    }
+    return {
+      ok: true,
+      data: {
+        id: sub.id,
+        documentReqId: (sub as any).documentReqId,
+        title: (sub as any).title || (sub as any).subject,
+        type: sub.type || 'Document',
+        purpose: (sub as any).purpose,
+        hall: (sub as any).hall || (sub as any).pickupHall,
+        status: sub.status,
+        issueDate: (sub as any).createdAt,
+        expiryDate: (sub as any).expiryDate,
+        fee: (sub as any).fee,
+        resident: {
+          name: sub.name,
+          email: sub.email,
+          address: sub.address,
+          phone: sub.phone,
+        },
+      },
+    };
+  }
+
+  @post('/submissions/{id}/complete')
+  @response(200, {
+    description: 'Mark a document submission as collected (status=completed)',
+    content: {'application/json': {schema: {type:'object'}}},
+  })
+  async markCollected(
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const sub = await this.submissionRepository.findById(id).catch(() => null);
+    if (!sub) return { ok:false, message: 'Not found' };
+    await this.submissionRepository.updateById(id, {
+      status: 'completed',
+      dateCompleted: new Date().toISOString(),
+    } as any);
+    const updated = await this.submissionRepository.findById(id);
+    return { ok:true, data: updated };
+  }
 }
 
 function normalizePH(num: string): string {
