@@ -68,6 +68,12 @@ export class SubmissionController {
       if (!documentReqId) documentReqId = await this.generateDocumentId();
     }
 
+    if (submissionType !== 'Document') {
+      if (submission && typeof submission === 'object') {
+        delete (submission as any).fee;
+        delete (submission as any).urgent;
+      }
+    }
     const payload: Partial<Submission> = {
       ...submission,
       phone: submission?.phone ? normalizePH(String(submission.phone)) : submission?.phone,
