@@ -239,7 +239,7 @@ export class SubmissionController {
           to: (sub as any).email, 
           subject: 'Your document request is ready for pickup',
           html: `<p>Hi ${who|| ''},</p>
-           <p>Thanks for registering. Please verify your email by clicking the link below:</p>
+           <p>Your document request ${refText} is now ready for pickup, download the QR Code by clicking the link below:</p>
            <p><a href="${qrCodeLink}" target="_blank" rel="noopener">Download QR</a></p>
            <p>Thank you.</p>`
         });
