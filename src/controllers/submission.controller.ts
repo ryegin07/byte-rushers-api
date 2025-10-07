@@ -1,4 +1,4 @@
-import {inject} from '@loopback/core';
+import {inject,service} from '@loopback/core';
 import {DataObject, repository} from '@loopback/repository';
 import {
   get,
@@ -20,7 +20,9 @@ import {SubmissionRepository} from '../repositories';
 import {MongodbDataSource} from '../datasources';
 import {CounterService} from '../services/counter.service';
 import {SmsService} from '../services/sms.service';
+import { MailerService } from '../services';
 
+const smsEnabled = (process.env.SMS_ENABLED || 'true').toLowerCase() === 'true';
 export class SubmissionController {
   private counter: CounterService;
   private sms: SmsService;
@@ -29,6 +31,7 @@ export class SubmissionController {
     @repository(SubmissionRepository)
     public submissionRepository: SubmissionRepository,
     @inject('datasources.mongodb') private mongoDs: MongodbDataSource,
+    @service(MailerService) private mailer: MailerService
   ) {
     this.counter = new CounterService(this.mongoDs);
     this.sms = new SmsService(this.mongoDs);
@@ -198,8 +201,7 @@ export class SubmissionController {
 
   private async maybeSendSms(sub: Submission) {
     try {
-      const enabled = (process.env.SMS_ENABLED || 'true').toLowerCase() === 'true';
-      if (!enabled) return;
+      if (!smsEnabled) return;
       if (!(sub as any).smsNotifications || !sub.phone) return;
       const t = (sub.submissionType || '').toLowerCase();
       if (t !== 'complaint' && t !== 'document') return;
@@ -211,6 +213,37 @@ export class SubmissionController {
         ? `Hi ${who}, your complaint has been received ${refText}. We'll keep you posted.`
         : `Hi ${who}, your document request has been received ${refText}. We'll text you updates when it's processing and ready for pickup.`;
 
+      await this.sms.send(sub.phone!, text);
+    } catch (e) {
+      console.warn('[SubmissionController] Failed to send SMS:', e);
+    }
+  }
+
+  private async sendSMSComplete(sub: Submission) {
+    try {
+      if (!smsEnabled) return;
+      if (!(sub as any).smsNotifications || !sub.phone) return;
+      const t = (sub.submissionType || '').toLowerCase();
+      if (t !== 'complaint' && t !== 'inquiry' && t !== 'document') return;
+
+      const who = (sub as any).name || (sub as any).requestorName || '';
+      const ref = t === 'complaint' ? (sub as any).complaintId : (sub as any).documentReqId;
+      const refText = ref ? ` (${ref})` : '';
+      let text = '';
+      if (t === 'complaint') {
+        text = `Hi ${who}, your complaint ${refText} has been resolved. Thank you.`;
+      } else if (t === 'document') {
+        const qrCodeLink = `${process.env.APP_URL || 'http://127.0.0.1:3001'}/submissions/${sub.id}/qr`;
+        text = `Hi ${who}, your document request ${refText} is now ready for pickup, QR code is sent to your email address. Please visit the municipal hall during working hours. Thank you.`;
+        await this.mailer.sendMail({ 
+          to: (sub as any).email, 
+          subject: 'Your document request is ready for pickup',
+          html: `<p>Hi ${who|| ''},</p>
+           <p>Thanks for registering. Please verify your email by clicking the link below:</p>
+           <p><a href="${qrCodeLink}" target="_blank" rel="noopener">Download QR</a></p>
+           <p>Thank you.</p>`
+        });
+      }
       await this.sms.send(sub.phone!, text);
     } catch (e) {
       console.warn('[SubmissionController] Failed to send SMS:', e);
@@ -236,6 +269,7 @@ export class SubmissionController {
       throw Object.assign(new Error('Invalid status'), {statusCode: 400});
     }
     await this.submissionRepository.updateById(id, {status: s} as any);
+    await this.sendSMSComplete(sub);
     return this.submissionRepository.findById(id);
   }
 
