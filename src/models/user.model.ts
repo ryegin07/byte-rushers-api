@@ -65,6 +65,12 @@ export class User extends Entity {
   @property({type: 'boolean', default: false})
   emailVerified?: boolean;
 
+  @property({type: 'boolean', default: true})
+  enableSMSNotif?: boolean;
+
+  @property({type: 'boolean', default: true})
+  enableEmailNotif?: boolean;
+
   @property({type: 'string'})
   verificationToken?: string;
 

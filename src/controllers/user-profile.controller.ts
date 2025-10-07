@@ -97,7 +97,7 @@ export class UserProfileController {
     }
 
     // Simple scalar updates
-    const scalars = ['firstName','lastName','phone','occupation','houseNumber','street','purok','barangayHall','civilStatus','birthDate','emergencyContact','emergencyPhone','avatar','hall', 'middleName'];
+    const scalars = ['firstName','lastName','phone','occupation','houseNumber','street','purok','barangayHall','civilStatus','birthDate','emergencyContact','emergencyPhone','avatar','hall', 'middleName', 'enableEmailNotif', 'enableSMSNotif'];
     for (const k of scalars) {
       if (k in body && typeof body[k] !== 'undefined') update[k] = body[k];
     } 
