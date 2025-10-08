@@ -12,6 +12,8 @@ import {MySequence} from './sequence';
 import {corsMiddleware} from './middleware/cors.middleware';
 import {CounterService} from './services/counter.service';
 import {PublisherObserver} from './observers/publisher.observer';
+import {MailerService} from './services/mailer.service';
+import {SmsService} from './services/sms.service';
 
 export {ApplicationConfig};
 
@@ -21,29 +23,32 @@ export class LoopbackApiApplication extends BootMixin(
   constructor(options: ApplicationConfig = {}) {
     super(options);
 
-     this.lifeCycleObserver(PublisherObserver);
-
     // Set up the custom sequence
     this.sequence(MySequence);
-
-    // Register CORS middleware
-    this.middleware(corsMiddleware);
 
     // Set up default home page
     this.static('/', path.join(__dirname, '../public'));
 
-    // Customize @loopback/rest-explorer configuration here
-    this.configure(RestExplorerBindings.COMPONENT).to({
+    // Explorer
+    this.bind(RestExplorerBindings.CONFIG).to({
       path: '/explorer',
     });
     this.component(RestExplorerComponent);
 
+    // CORS middleware
+    this.middleware(corsMiddleware);
+
     this.projectRoot = __dirname;
-    // Customize @loopback/boot Booter Conventions here
+
+    // Bind services and observer
     this.service(CounterService);
+    this.service(MailerService);
+    this.service(SmsService);
+    this.lifeCycleObserver(PublisherObserver);
+
+    // Boot options
     this.bootOptions = {
       controllers: {
-        // Customize ControllerBooter Conventions here
         dirs: ['controllers'],
         extensions: ['.controller.js'],
         nested: true,
