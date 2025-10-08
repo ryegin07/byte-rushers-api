@@ -6,3 +6,4 @@ export * from './auth.controller';
 export * from './user-profile.controller';
 export * from './announcement.controller';
 export * from './resident-lookup.controller';
+export * from './feedback.controller';
