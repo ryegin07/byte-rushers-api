@@ -8,3 +8,5 @@ export * from './announcement.controller';
 export * from './resident-lookup.controller';
 export * from './feedback.controller';
 export * from './feedback-export.controller';
+
+export * from './analytics.controller';
