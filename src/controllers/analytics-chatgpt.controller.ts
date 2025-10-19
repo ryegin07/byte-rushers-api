@@ -132,31 +132,88 @@ export class AnalyticsChatGPTController {
       daily: f.forecast
     }));
 
-    const payload: any = {
-      source,
-      version: INTEGRATION_VERSION,
-      hotspots: topHotspots,
-      serviceForecasts: serviceForecastCards,
-      staffing: {
-        capacityPerStaffPerDay,
-        horizonDays: horizon,
-        plan: staffPlan,
-        unmetDemand: staffPlan.map((staff: number, idx: number) => Math.max(0, Math.round(totalDemandPerDay[idx] - staff * capacityPerStaffPerDay))),
-      },
-      emergency: { classes: ['flood','fire','medical'], summary: emergencySummary, items: emergency.predictions },
-      recommendations: recos.recommendations,
-      stats: {
-        systemEfficiency,
-        highRiskAreas: topHotspots.slice(0,3).map((h: HotspotRow) => h.location),
-        predictedDemandToday: Math.round(totalDemandPerDay[0] ?? 0),
-        aiRecommendationsCount: recos.recommendations.length
-      },
-      lastUpdated: new Date().toISOString()
-    };
+    
+    // === UI-compatible payload for /analytics/ml-insights (match live endpoint) ===
+    const nowISO = new Date().toISOString();
 
-    if (debug) payload._debug = { model: process.env.OPENAI_MODEL || 'gpt-4o-mini', recentOpenAICalls: getRecentOpenAICalls(10) };
-    return payload;
-  }
+    // Map hotspots to expected UI shape
+    const hotspots = (topHotspots || []).map((h: any) => ({
+      location: h.location,
+      riskScore: Math.max(0, Math.min(100, Math.round(h.score))),
+      predictedComplaints: Math.max(h.recent || 0, Math.round(Math.max(1, h.total || 0) / 4)),
+      commonIssues: [],
+      recommendedActions: (h.score || 0) >= 70
+        ? ['Increase patrols', 'Targeted community advisory', 'Pre-position resources']
+        : ['Routine monitoring'],
+    }));
+
+    // Map forecasts to expected serviceDemand
+    const serviceDemand = (forecasts || []).map((f: any) => {
+      const forecastToday = f?.forecast?.[0]?.yhat ?? 0;
+      const currentApprox = Math.round(forecastToday * 0.7);
+      const predicted = Math.round(forecastToday);
+      return {
+        service: f.service,
+        currentDemand: currentApprox,
+        predictedDemand: predicted,
+        confidence: 85,
+        recommendedStaff: Math.max(1, Math.round(predicted / Math.max(1, capacityPerStaffPerDay/2))),
+        peakHours: ['09:00-11:00', '14:00-16:00'],
+      };
+    });
+
+    // Synthetic resource allocation (light heuristic)
+    const halls = ['Manggahan Proper','Napico','Greenpark'];
+    const resourceAllocation = serviceDemand.slice(0, 3).map((s, idx) => ({
+      hall: halls[idx] || `Hall ${idx+1}`,
+      currentLoad: Math.min(100, Math.max(30, s.currentDemand)),
+      predictedLoad: Math.min(100, Math.max(40, s.predictedDemand)),
+      efficiency: Math.max(50, Math.min(100, Math.round((systemEfficiency || 75) - (idx*2)))),
+      recommendedStaff: s.recommendedStaff,
+      priorityServices: [s.service],
+    }));
+
+    // Emergency to expected UI shape
+    const emergencyPredictions = (emergency?.predictions || []).map((p: any) => ({
+      type: p.label ? (p.label.charAt(0).toUpperCase() + p.label.slice(1) + ' Risk') : 'Emergency Risk',
+      location: 'General Area',
+      probability: Math.round((p.prob ?? 0) * 100),
+      estimatedResponseTime: 10,
+      requiredResources: ['Response team', 'Medical kit'],
+      preventiveMeasures: ['Public advisory', 'Equipment readiness'],
+    }));
+
+    const recommendations = (recos?.recommendations || []).map((r: any) => (
+      r?.title && r?.impact ? `${r.title} — ${r.impact}` : (r?.text || r?.title || 'Operational improvement')
+    ));
+
+    const overallEfficiency = Math.max(50, Math.min(100, Math.round(systemEfficiency || 76)));
+
+    if (debug) {
+      return {
+        overallEfficiency,
+        hotspots,
+        serviceDemand,
+        resourceAllocation,
+        emergencyPredictions,
+        recommendations,
+        lastUpdated: nowISO,
+        serverTime: nowISO,
+        _debug: { model: process.env.OPENAI_MODEL || process.env.OPENAI_FALLBACK_CHAT_MODEL || 'gpt-4o-mini' }
+      };
+    }
+
+    return {
+      overallEfficiency,
+      hotspots,
+      serviceDemand,
+      resourceAllocation,
+      emergencyPredictions,
+      recommendations,
+      lastUpdated: nowISO,
+      serverTime: nowISO,
+    };
+}
 }
 
 /* helpers (same as before) */

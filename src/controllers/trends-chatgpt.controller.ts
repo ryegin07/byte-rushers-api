@@ -120,13 +120,41 @@ Return ONLY JSON matching the schema.`;
       stats: out.stats,
     };
 
+    
     if ((format || '').toLowerCase() === 'legacy') {
       const legacy = toLegacyFormat(days, out);
       return { source, lastUpdated: v2.lastUpdated, ...legacy };
     }
 
-    return v2;
-  }
+    function toTrendLabel(dir: 'up'|'down'|'flat'|string): 'up'|'down'|'stable'|'flat' {
+      if (dir === 'flat') return 'flat';
+      if (dir === 'up' || dir === 'down') return dir as any;
+      return 'stable';
+    }
+
+    const complaintTrends = (v2.trends || [])
+      .filter((t: any) => /complaint|issue|incident/i.test(t.metric))
+      .map((t: any) => ({
+        category: t.metric,
+        trend: toTrendLabel(t.direction),
+        percentage: Math.round(t.pctChange ?? 0),
+      }));
+
+    const serviceTrends = (v2.trends || [])
+      .filter((t: any) => /service|request|document|clearance|id/i.test(t.metric) && !/complaint|issue|incident/i.test(t.metric))
+      .map((t: any) => ({
+        service: t.metric,
+        trend: toTrendLabel(t.direction),
+        percentage: Math.round(t.pctChange ?? 0),
+      }));
+
+    return {
+      complaintTrends,
+      serviceTrends,
+      lastUpdated: v2.lastUpdated,
+      serverTime: now.toISOString(),
+    };
+    }
 }
 
 function normalizeMetric(t?: string) {
