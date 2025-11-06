@@ -162,22 +162,27 @@ export class AnnouncementController {
 
   // Serve uploaded image
   @get('/announcements/assets/{filename}')
-  @response(200, {description: 'Announcement image'})
+  @response(200, { description: 'Announcement image' })
   async getAsset(
     @param.path.string('filename') filename: string,
-  ): Promise<void> {
+  ): Promise<Response> {
     const filePath = path.join(ANN_UPLOAD_DIR, filename);
-    if (!fs.existsSync(filePath)) {
-      this.res.status(404).end();
-      return;
-    }
+     if (!fs.existsSync(filePath)) {
+    this.res.status(404).end();
+    return this.res;                       // <— return Response on 404 too
+  }
     const ext = path.extname(filename).toLowerCase();
-    const mime = ext === '.png'
-      ? 'image/png'
-      : (ext === '.jpg' || ext === '.jpeg')
-      ? 'image/jpeg'
-      : 'application/octet-stream';
+    const mime =
+      ext === '.png' ? 'image/png' :
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+          'application/octet-stream';
+
+    // headers (optional cache headers for perf)
     this.res.setHeader('Content-Type', mime);
-    fs.createReadStream(filePath).pipe(this.res);
+    this.res.setHeader('Cache-Control', 'public, max-age=3600, immutable');
+
+    // Option A: sendFile (simplest)
+    this.res.sendFile(filePath);
+    return this.res;
   }
 }
