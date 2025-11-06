@@ -98,7 +98,11 @@ export class SubmissionController {
   async createWithFile(
     @inject(RestBindings.Http.REQUEST) req: Request,
   ): Promise<Submission> {
+    
+    const fs = await import('fs'); const path = await import('path');
     const uploadDir = path.resolve(__dirname, '../../public/uploads');
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, {recursive: true});
+
     const storage = multer.diskStorage({
       destination: (_req: any, _file: any, cb: (err: any, dest: string) => void) =>
         cb(null, uploadDir),
@@ -331,7 +335,7 @@ export class SubmissionController {
         id: sub.id,
         documentReqId: (sub as any).documentReqId,
         title: (sub as any).title || (sub as any).subject,
-        type: sub.type || 'Document',
+        type: sub.documentType || 'Document',
         purpose: (sub as any).purpose,
         hall: (sub as any).hall || (sub as any).pickupHall,
         status: sub.status,
