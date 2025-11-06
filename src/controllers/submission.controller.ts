@@ -228,6 +228,7 @@ export class SubmissionController {
       if (!smsEnabled) return;
       if (!(sub as any).smsNotifications || !sub.phone) return;
       const t = (sub.submissionType || '').toLowerCase();
+      const st = (sub.status || '').toLowerCase();
       if (t !== 'complaint' && t !== 'inquiry' && t !== 'document') return;
 
       const who = (sub as any).name || (sub as any).requestorName || '';
@@ -236,7 +237,7 @@ export class SubmissionController {
       let text = '';
       if (t === 'complaint') {
         text = `Hi ${who}, your complaint ${refText} has been resolved. Thank you.`;
-      } else if (t === 'document') {
+      } else if (t === 'document' && st === 'ready') {
         const qrCodeLink = `${process.env.APP_URL || 'http://127.0.0.1:3001'}/submissions/${sub.id}/qr`;
         text = `Hi ${who}, your document request ${refText} is now ready for pickup, QR code is sent to your email address. Please visit the municipal hall during working hours. Thank you.`;
         await this.mailer.sendMail({ 
@@ -247,6 +248,8 @@ export class SubmissionController {
            <p><a href="${qrCodeLink}" target="_blank" rel="noopener">Download QR</a></p>
            <p>Thank you.</p>`
         });
+      } else if (t === 'document' && st === 'cancelled') {
+        text = `Hi ${who}, your document request ${refText} has been cancelled. Thank you.`;
       }
       await this.sms.send(sub.phone!, text);
     } catch (e) {
@@ -266,13 +269,13 @@ export class SubmissionController {
     })
     body: {status: string},
   ): Promise<Submission> {
-    const sub = await this.submissionRepository.findById(id);
-    const allowed = ['pending','ready','completed','active','resolved'];
+    const allowed = ['pending','ready','completed','active','resolved', 'cancelled'];
     const s = (body.status || '').toLowerCase();
     if (!allowed.includes(s)) {
       throw Object.assign(new Error('Invalid status'), {statusCode: 400});
     }
     await this.submissionRepository.updateById(id, {status: s} as any);
+    const sub = await this.submissionRepository.findById(id);
     await this.sendSMSComplete(sub);
     return this.submissionRepository.findById(id);
   }
