@@ -70,3 +70,4 @@ api.zip
 
 public/uploads/*.*
 public/storage/*.*
+logs/*
