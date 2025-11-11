@@ -10,6 +10,7 @@ import {
   RestBindings,
   Response,
   param,
+  operation,
 } from '@loopback/rest';
 import {repository} from '@loopback/repository';
 import multer from 'multer';
@@ -51,46 +52,139 @@ export class BudgetVersionController {
   }
 
   @get('/budget-versions/latest/download')
-  @response(200, { description: 'Stream the latest PDF' })
+  @response(200, {
+    description: 'Stream the latest PDF',
+    content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+  })
   async latestDownload(): Promise<void> {
     const latest = await this.latest();
     if (!latest?.fileUrl) {
-      this.res.status(404).send({message: 'No budget report uploaded yet'});
+      this.res.status(404).send({ message: 'No budget report uploaded yet' });
       return;
     }
-    if (latest.fileUrl.startsWith('/')) {
-      const filePath = path.resolve(process.cwd(), '..', latest.fileUrl);
-      if (!fs.existsSync(filePath)) {
-        this.res.status(404).send({message: 'File not found'});
-        return;
-      }
-      this.res.setHeader('Content-Type', 'application/pdf');
-      fs.createReadStream(filePath).pipe(this.res);
+
+    if (!latest.fileUrl.startsWith('/')) {
+      this.res.redirect(latest.fileUrl);
       return;
     }
-    this.res.redirect(latest.fileUrl);
+
+    // build filesystem path like your snippet does
+    const urlPath = latest.fileUrl.replace(/^[/\\]+/, '');
+    const parent = path.resolve(process.cwd(), '..');
+    const filePath = path.join(parent, urlPath);
+
+    if (!fs.existsSync(filePath)) {
+      this.res.status(404).json({ ok: false, message: 'File not found' });
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    const fileName = latest.fileName || 'budget-report.pdf';
+
+    this.res.setHeader('Content-Type', 'application/pdf');
+    this.res.setHeader('Content-Disposition', `inline; filename="${fileName.replace(/"/g, '')}"`);
+    this.res.setHeader('Content-Length', String(stat.size));
+    this.res.setHeader('Last-Modified', stat.mtime.toUTCString());
+    this.res.setHeader('Accept-Ranges', 'bytes');
+    this.res.setHeader('Cache-Control', 'public, max-age=3600, immutable');
+
+    const stream = fs.createReadStream(filePath);
+    if (typeof (this.res as any).flushHeaders === 'function') (this.res as any).flushHeaders();
+    stream.on('error', () => {
+      if (!this.res.headersSent) this.res.status(500);
+      this.res.end();
+    });
+    stream.pipe(this.res);
   }
 
+  @operation('head', '/budget-versions/latest/download')
+  @response(200, { description: 'HEAD check for latest budget version' })
+  async headLatest(): Promise<void> {
+    const latest = await this.latest();
+    if (!latest?.fileUrl?.startsWith('/')) {
+      this.res.status(404).end();
+      return;
+    }
+    const urlPath = latest.fileUrl.replace(/^[/\\]+/, '');
+    const parent = path.resolve(process.cwd(), '..');
+    const filePath = path.join(parent, urlPath);
+    if (!fs.existsSync(filePath)) {
+      this.res.status(404).end();
+      return;
+    }
+    const stat = fs.statSync(filePath);
+    this.res.setHeader('Content-Type', 'application/pdf');
+    this.res.setHeader('Content-Length', String(stat.size));
+    this.res.setHeader('Last-Modified', stat.mtime.toUTCString());
+    this.res.setHeader('Accept-Ranges', 'bytes');
+    this.res.setHeader('Cache-Control', 'public, max-age=3600, immutable');
+    this.res.status(200).end();
+  }
+
+
   @get('/budget-versions/{id}/download')
-  @response(200, {description: 'Download specific version'})
+  @response(200, {
+    description: 'Download specific version',
+    content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+  })
   async downloadById(@param.path.string('id') id: string): Promise<void> {
     const rec = await this.bvRepo.findById(id);
     if (!rec?.fileUrl) {
-      this.res.status(404).send({message: 'Not found'});
+      this.res.status(404).send({ message: 'Not found' });
       return;
     }
-    if (rec.fileUrl.startsWith('/')) {
-      const filePath = path.resolve(process.cwd(), '..', rec.fileUrl);
-      if (!fs.existsSync(filePath)) {
-        this.res.status(404).send({message: 'File missing'});
-        return;
-      }
-      this.res.setHeader('Content-Type', 'application/pdf');
-      fs.createReadStream(filePath).pipe(this.res);
+
+    if (!rec.fileUrl.startsWith('/')) {
+      this.res.redirect(rec.fileUrl);
       return;
     }
-    this.res.redirect(rec.fileUrl);
+
+    const urlPath = rec.fileUrl.replace(/^[/\\]+/, '');
+    const parent = path.resolve(process.cwd(), '..');
+    const filePath = path.join(parent, urlPath);
+
+    if (!fs.existsSync(filePath)) {
+      this.res.status(404).json({ ok: false, message: 'File missing' });
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    const fileName = rec.fileName || 'budget-report.pdf';
+
+    this.res.setHeader('Content-Type', 'application/pdf');
+    this.res.setHeader('Content-Disposition', `inline; filename="${fileName.replace(/"/g, '')}"`);
+    this.res.setHeader('Content-Length', String(stat.size));
+    this.res.setHeader('Last-Modified', stat.mtime.toUTCString());
+    this.res.setHeader('Accept-Ranges', 'bytes');
+    this.res.setHeader('Cache-Control', 'public, max-age=3600, immutable');
+
+    const stream = fs.createReadStream(filePath);
+    if (typeof (this.res as any).flushHeaders === 'function') (this.res as any).flushHeaders();
+    stream.on('error', () => {
+      if (!this.res.headersSent) this.res.status(500);
+      this.res.end();
+    });
+    stream.pipe(this.res);
   }
+
+  @operation('head', '/budget-versions/{id}/download')
+  @response(200, { description: 'HEAD check for a specific budget version' })
+  async headDownloadById(@param.path.string('id') id: string): Promise<void> {
+    const rec = await this.bvRepo.findById(id).catch(() => null);
+    if (!rec?.fileUrl?.startsWith('/')) { this.res.status(404).end(); return; }
+    const urlPath = rec.fileUrl.replace(/^[/\\]+/, '');
+    const parent = path.resolve(process.cwd(), '..');
+    const filePath = path.join(parent, urlPath);
+    if (!fs.existsSync(filePath)) { this.res.status(404).end(); return; }
+    const stat = fs.statSync(filePath);
+    this.res.setHeader('Content-Type', 'application/pdf');
+    this.res.setHeader('Content-Length', String(stat.size));
+    this.res.setHeader('Last-Modified', stat.mtime.toUTCString());
+    this.res.setHeader('Accept-Ranges', 'bytes');
+    this.res.setHeader('Cache-Control', 'public, max-age=3600, immutable');
+    this.res.status(200).end();
+  }
+
 
   @post('/budget-versions/upload')
   @response(200, {description: 'Upload a new budget version'})
@@ -175,7 +269,9 @@ export class BudgetVersionController {
   async remove(@param.path.string('id') id: string): Promise<object> {
     const rec = await this.bvRepo.findById(id).catch(() => null);
     if (rec?.fileUrl?.startsWith('/')) {
-      const filePath = path.resolve(process.cwd(), '..', rec.fileUrl);
+      const urlPath = (rec.fileUrl || '').replace(/^[/\\]+/, '');
+      const parent = path.resolve(process.cwd(), '..');
+      const filePath = path.join(parent, urlPath);
       if (fs.existsSync(filePath)) {
         try { fs.unlinkSync(filePath); } catch { /* ignore unlink errors */ }
       }
