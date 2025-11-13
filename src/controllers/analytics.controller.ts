@@ -17,7 +17,7 @@ const asStr = (v: unknown, def = ''): string => {
 const asArr = <T = unknown>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
-/** ---------- Mongo “shape” types we read ---------- */
+/** ---------- Mongo shapes ---------- */
 interface SummaryDoc {
   date_generated?: Date | string;
   system_efficiency?: unknown;
@@ -46,9 +46,9 @@ interface AllocationDoc {
   hall?: unknown;
   service?: unknown;
   predicted_demand?: unknown;
-  predictedDemand?: unknown; // tolerate alt casing
+  predictedDemand?: unknown;
   recommended_staff?: unknown;
-  recommendedStaff?: unknown; // tolerate alt casing
+  recommendedStaff?: unknown;
   efficiency?: unknown;
   bottlenecks?: unknown;
 }
@@ -61,7 +61,7 @@ interface EmergencyDoc {
   preventive_measures?: unknown;
 }
 
-/** ---------- DTOs we send to the Web UI ---------- */
+/** ---------- DTOs for the Web UI ---------- */
 interface HotspotCard {
   location: string;
   riskScore: number;
@@ -186,6 +186,20 @@ export class AnalyticsController {
     const from = `${pad(h)}:00`;
     const to = `${pad((h + 1) % 24)}:00`;
     return `${from}–${to}`;
+  }
+
+  // ---------- Simple dedup + cap for recommendations ----------
+  private dedupCap(recs: string[], cap = 8): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of recs) {
+      const key = r.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+      if (out.length >= cap) break;
+    }
+    return out;
   }
 
   // ===================== /analytics/ml-insights =====================
@@ -351,7 +365,6 @@ export class AnalyticsController {
         .slice(0, 3);
 
       // ---------- RESOURCE ALLOCATION ----------
-      // Group allocations by hall
       const byHall = new Map<string, AllocationDoc[]>();
       for (const row of allocation) {
         const hall = asStr(row.hall, '');
@@ -368,7 +381,7 @@ export class AnalyticsController {
         const predMinutesBySvc: Record<ServiceKey, number> = {Complaint: 0, Document: 0};
 
         const todayCounts = todayCountsByHallSvc[hall] ?? {Complaint: 0, Document: 0};
-        let currentMinutesNeeded =
+        const currentMinutesNeeded =
           todayCounts.Complaint * AHT.Complaint +
           todayCounts.Document * AHT.Document;
 
@@ -411,7 +424,7 @@ export class AnalyticsController {
       }
 
       // ---------- EMERGENCY ----------
-      emergencyPredictions = emergency.map<EmergencyCard>((e) => ({
+      emergencyPredictions = asArr<EmergencyDoc>(emergency).map<EmergencyCard>((e) => ({
         type: asStr(e.class, '').toUpperCase(),
         location: asStr(e.hall, ''),
         probability: Math.round(100 * asNum(e.probability, 0)),
@@ -436,6 +449,54 @@ export class AnalyticsController {
           serviceDemand[idx].recommendedStaff = Math.max(serviceDemand[idx].recommendedStaff, 3);
         }
       }
+
+      // ---------- Build fallback AI recommendations (if summary was empty) ----------
+      if (!recommendations || recommendations.length === 0) {
+        const recs: string[] = [];
+
+        // Hotspots: high risk
+        for (const h of hotspotsOut.slice(0, 3)) {
+          if (h.riskScore >= 75) {
+            const reason = h.commonIssues[0] ? ` (${h.commonIssues[0]})` : '';
+            recs.push(`Pre-position staff at ${h.location}${reason}; inspect and address known issues.`);
+          } else if (h.riskScore >= 60) {
+            recs.push(`Increase patrols and visibility near ${h.location}; monitor for rising complaints.`);
+          }
+        }
+
+        // Services: big lift or low confidence
+        for (const s of serviceDemand) {
+          const lift = s.currentDemand > 0 ? (s.predictedDemand - s.currentDemand) / Math.max(1, s.currentDemand) : (s.predictedDemand > 0 ? 1 : 0);
+          if (lift >= 0.5 && s.predictedDemand >= 5) {
+            const peak = s.peakHours[0] ?? 'peak hours';
+            recs.push(`Add ${Math.max(1, Math.round(s.recommendedStaff / 2))} temporary ${s.service.toLowerCase()} clerk(s) during ${peak}.`);
+          }
+          if (s.confidence <= 60 && s.predictedDemand >= 3) {
+            recs.push(`Monitor ${s.service.toLowerCase()} volume closely this week (low model confidence).`);
+          }
+        }
+
+        // Allocation: stressed halls
+        for (const hall of resourceAllocation) {
+          if (hall.predictedLoad >= 85) {
+            recs.push(`Increase staffing at ${hall.hall} by +1 to offset projected ${hall.predictedLoad}% load.`);
+          } else if (hall.efficiency <= 55) {
+            recs.push(`Review process bottlenecks at ${hall.hall}; efficiency at ${hall.efficiency}%.`);
+          } else if (hall.currentLoad <= 25 && hall.efficiency >= 85) {
+            recs.push(`Consider reallocating 1 staff from ${hall.hall} during off-peak hours.`);
+          }
+        }
+
+        // Emergency: elevated risks
+        for (const e of emergencyPredictions) {
+          if (e.probability >= 30) {
+            const cls = e.type.toLowerCase();
+            recs.push(`Prepare ${cls} response kit at ${e.location}; target response ${e.estimatedResponseTime} min.`);
+          }
+        }
+
+        recommendations = this.dedupCap(recs, 8);
+      }
     } catch {
       // Swallow errors and return safe defaults
     }
@@ -449,7 +510,7 @@ export class AnalyticsController {
       serviceDemand,
       serviceForecast: serviceDemand.map((s) => ({
         service: s.service,
-        forecast: [], // not used by cards; charts read /analytics/trends
+        forecast: [], // charts read /analytics/trends
         peakHours: s.peakHours,
         priorityServices: [s.service],
       })),
