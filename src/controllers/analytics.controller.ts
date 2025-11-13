@@ -1,15 +1,119 @@
 /* eslint-disable @typescript-eslint/naming-convention */
 import {get, response} from '@loopback/rest';
-import {repository, AnyObject} from '@loopback/repository';
+import {repository} from '@loopback/repository';
 
 import {SubmissionRepository} from '../repositories/submission.repository';
 import {UserRepository} from '../repositories/user.repository';
+
+/** ---------- Small utility parsing functions (no implicit any) ---------- */
+const asNum = (v: unknown, def = 0): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+};
+const asStr = (v: unknown, def = ''): string => {
+  const s = String(v ?? def);
+  return s;
+};
+const asArr = <T = unknown>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+
+/** ---------- Mongo “shape” types we read ---------- */
+interface SummaryDoc {
+  date_generated?: Date | string;
+  system_efficiency?: unknown;
+  ai_recommendations?: unknown;
+}
+interface HotspotDoc {
+  hall?: unknown;
+  risk_score?: unknown;
+  predicted_count?: unknown;
+  common_issues?: unknown;
+  recommended_actions?: unknown;
+}
+interface ForecastPoint {
+  date?: unknown;
+  yhat?: unknown;
+  yhat_lower?: unknown;
+  yhat_upper?: unknown;
+}
+interface ServiceForecastDoc {
+  service?: unknown;
+  used_model?: unknown;
+  forecast?: unknown;
+  date_generated?: unknown;
+}
+interface AllocationDoc {
+  hall?: unknown;
+  service?: unknown;
+  predicted_demand?: unknown;
+  predictedDemand?: unknown; // tolerate alt casing
+  recommended_staff?: unknown;
+  recommendedStaff?: unknown; // tolerate alt casing
+  efficiency?: unknown;
+  bottlenecks?: unknown;
+}
+interface EmergencyDoc {
+  hall?: unknown;
+  class?: unknown;
+  probability?: unknown;
+  estimated_response_time_min?: unknown;
+  required_resources?: unknown;
+  preventive_measures?: unknown;
+}
+
+/** ---------- DTOs we send to the Web UI ---------- */
+interface HotspotCard {
+  location: string;
+  riskScore: number;
+  predictedComplaints: number;
+  commonIssues: string[];
+  recommendedActions: string[];
+  peakHours: string[];
+  priorityServices: string[];
+}
+interface ServiceDemandCard {
+  service: string;
+  currentDemand: number;
+  predictedDemand: number;
+  recommendedStaff: number;
+  confidence: number;
+  peakHours: string[];
+}
+interface HallAllocationCard {
+  hall: string;
+  currentLoad: number;
+  predictedLoad: number;
+  recommendedStaff: number;
+  efficiency: number;
+  priorityServices: string[];
+}
+interface EmergencyCard {
+  type: string;
+  location: string;
+  probability: number; // percent 0–100
+  estimatedResponseTime: number;
+  requiredResources: string[];
+  preventiveMeasures: string[];
+  peakHours: string[];
+  priorityServices: string[];
+}
+
+type ServiceKey = 'Complaint' | 'Document';
 
 export class AnalyticsController {
   constructor(
     @repository(SubmissionRepository) private submissionRepo: SubmissionRepository,
     @repository(UserRepository) private userRepo: UserRepository,
   ) {}
+
+  // ---------- Config / constants ----------
+  private readonly AHT_COMPLAINT = asNum(process.env.AHT_COMPLAINT, 60); // minutes
+  private readonly AHT_DOCUMENT = asNum(process.env.AHT_DOCUMENT, 20);   // minutes
+  private readonly SLA_DAYS = asNum(process.env.SLA_DAYS, 4);
+  private readonly STAFF_DAY_CAPACITY_MIN = 7 * 60; // 7h/day per staff
+  private readonly DEBUG_VARIANCE = Boolean(process.env.ANALYTICS_DEBUG_VARIANCE);
+
+  private readonly SERVICES: ServiceKey[] = ['Complaint', 'Document'];
 
   /** Decide suffix for prediction collection names */
   private suffix(): string {
@@ -19,9 +123,9 @@ export class AnalyticsController {
   }
 
   /** Access the LoopBack Mongo connector via repository (no mongodb typings needed) */
-  private mongoConnector(): any {
-    const ds: any = (this.submissionRepo as any).dataSource;
-    const conn = ds?.connector;
+  private mongoConnector(): {collection?: (name: string) => any; db?: {collection: (name: string) => any}} {
+    const ds: unknown = (this.submissionRepo as unknown as {dataSource?: unknown}).dataSource;
+    const conn = (ds as {connector?: unknown})?.connector as {collection?: (name: string) => any; db?: {collection: (name: string) => any}} | undefined;
     if (!conn) throw new Error('Mongo connector not available via repository.dataSource');
     return conn;
   }
@@ -37,163 +141,324 @@ export class AnalyticsController {
   private async readPredictionsFromDb() {
     const sfx = this.suffix();
 
-    const summary = await this.collection(`predictions_summary${sfx}`)
+    const summary = (await this.collection(`predictions_summary${sfx}`)
       .find({})
       .sort({date_generated: -1})
       .limit(1)
-      .next();
+      .next()) as SummaryDoc | null;
 
-    const hotspots = await this.collection(`predictions_hotspot${sfx}`)
+    const hotspots = (await this.collection(`predictions_hotspot${sfx}`)
+      .find({})
+      .sort({date_generated: -1, risk_score: -1})
+      .toArray()) as HotspotDoc[];
+
+    const serviceForecast = (await this.collection(`predictions_service_forecast${sfx}`)
       .find({})
       .sort({date_generated: -1})
-      .toArray();
+      .toArray()) as ServiceForecastDoc[];
 
-    const serviceForecast = await this.collection(`predictions_service_forecast${sfx}`)
+    const allocation = (await this.collection(`predictions_allocation${sfx}`)
       .find({})
       .sort({date_generated: -1})
-      .toArray();
+      .toArray()) as AllocationDoc[];
 
-    const allocation = await this.collection(`predictions_allocation${sfx}`)
+    const emergency = (await this.collection(`predictions_emergency${sfx}`)
       .find({})
       .sort({date_generated: -1})
-      .toArray();
-
-    const emergency = await this.collection(`predictions_emergency${sfx}`)
-      .find({})
-      .sort({date_generated: -1})
-      .toArray();
+      .toArray()) as EmergencyDoc[];
 
     return {summary, hotspots, serviceForecast, allocation, emergency};
+  }
+
+  // ---------- Date helpers (UTC) ----------
+  private startOfDayUTC(d: Date) {
+    const x = new Date(d);
+    x.setUTCHours(0, 0, 0, 0);
+    return x;
+  }
+  private endOfDayUTC(d: Date) {
+    const x = new Date(d);
+    x.setUTCHours(23, 59, 59, 999);
+    return x;
+  }
+  private fmtHourRange(h: number) {
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    const from = `${pad(h)}:00`;
+    const to = `${pad((h + 1) % 24)}:00`;
+    return `${from}–${to}`;
   }
 
   // ===================== /analytics/ml-insights =====================
   @get('/analytics/ml-insights')
   @response(200, {description: 'ML Insights'})
   async mlInsights() {
-    // Defaults (map-safe so UI never crashes on .map())
-    const EMPTY: any[] = [];
+    const EMPTY: unknown[] = [];
+
     let overallEfficiency = 75;
     let recommendations: string[] = [];
-    let hotspotsOut: any[] = [];
-    let serviceDemand: any[] = [];
-    let resourceAllocation: any[] = [];
-    let emergencyPredictions: any[] = [];
+    let hotspotsOut: HotspotCard[] = [];
+    let serviceDemand: ServiceDemandCard[] = [];
+    let resourceAllocation: HallAllocationCard[] = [];
+    let emergencyPredictions: EmergencyCard[] = [];
     let lastUpdated: string | undefined;
     let topLevelPriorityServices: string[] = [];
+
+    const AHT: Record<ServiceKey, number> = {
+      Complaint: this.AHT_COMPLAINT,
+      Document: this.AHT_DOCUMENT,
+    };
 
     try {
       const {summary, hotspots, serviceForecast, allocation, emergency} =
         await this.readPredictionsFromDb();
 
       if (summary) {
-        overallEfficiency = Number(summary['system_efficiency'] ?? 75);
-        recommendations = (summary['ai_recommendations'] ?? []) as string[];
-        lastUpdated = String(summary['date_generated'] ?? '');
+        overallEfficiency = asNum(summary.system_efficiency, 75);
+        recommendations = asArr<string>(summary.ai_recommendations);
+        lastUpdated = asStr(summary.date_generated ?? '', '');
       }
 
-      if (Array.isArray(hotspots)) {
-        hotspotsOut = hotspots.map((h: AnyObject) => {
-          const issues = (h.common_issues ?? []) as string[];
-          return {
-            location: String(h.hall ?? ''),
-            riskScore: Number(h.risk_score ?? 0),
-            predictedComplaints: Number(h.predicted_count ?? 0),
-            commonIssues: issues,
-            recommendedActions: (h.recommended_actions ?? []) as string[],
-            // UI safety fields:
-            peakHours: [],                            // array for .map()
-            priorityServices: issues.slice(0, 3),     // derive from common_issues
-          };
+      // ---------- HOTSPOTS ----------
+      hotspotsOut = hotspots.map<HotspotCard>((h) => {
+        const issues = asArr<string>(h.common_issues);
+        return {
+          location: asStr(h.hall, ''),
+          riskScore: asNum(h.risk_score, 0),
+          predictedComplaints: asNum(h.predicted_count, 0),
+          commonIssues: issues,
+          recommendedActions: asArr<string>(h.recommended_actions),
+          peakHours: [],
+          priorityServices: issues.slice(0, 3),
+        };
+      });
+
+      // ---------- Build “current” signals from submissions ----------
+      const now = new Date();
+      const todayStart = this.startOfDayUTC(now);
+      const todayEnd = this.endOfDayUTC(now);
+      const yest = new Date(now.getTime() - 24 * 3600 * 1000);
+      const yStart = this.startOfDayUTC(yest);
+      const yEnd = this.endOfDayUTC(yest);
+
+      // Yesterday per-service counts → currentDemand
+      const yestAgg = (await this.collection('submissions').aggregate([
+        {$match: {createdAt: {$gte: yStart, $lte: yEnd}, submissionType: {$in: this.SERVICES}}},
+        {$group: {_id: '$submissionType', count: {$sum: 1}}},
+      ]).toArray()) as Array<{_id?: unknown; count?: unknown}>;
+
+      const yestCountsByService: Record<ServiceKey, number> = {Complaint: 0, Document: 0};
+      for (const r of yestAgg) {
+        const key = asStr(r._id, '') as ServiceKey;
+        if ((this.SERVICES as string[]).includes(key)) {
+          yestCountsByService[key] = asNum(r.count, 0);
+        }
+      }
+
+      // Yesterday per-service hour buckets → peakHours
+      const yestHours = (await this.collection('submissions').aggregate([
+        {$match: {createdAt: {$gte: yStart, $lte: yEnd}, submissionType: {$in: this.SERVICES}}},
+        {$project: {submissionType: 1, hour: {$hour: '$createdAt'}}},
+        {$group: {_id: {svc: '$submissionType', hour: '$hour'}, cnt: {$sum: 1}}},
+        {$sort: {'_id.svc': 1 as const, cnt: -1 as const}},
+      ]).toArray()) as Array<{_id?: {svc?: unknown; hour?: unknown}; cnt?: unknown}>;
+
+      const peakHourByService: Record<ServiceKey, string[]> = {Complaint: [], Document: []};
+      for (const row of yestHours) {
+        const svc = asStr(row?._id?.svc, '') as ServiceKey;
+        const hour = asNum(row?._id?.hour, 9);
+        const label = this.fmtHourRange(hour);
+        if ((this.SERVICES as string[]).includes(svc)) {
+          peakHourByService[svc].push(label);
+        }
+      }
+      // Dedup & fallback defaults
+      for (const svc of this.SERVICES) {
+        const dedup = Array.from(new Set(peakHourByService[svc]));
+        peakHourByService[svc] =
+          dedup.slice(0, 3).length ? dedup.slice(0, 3)
+          : svc === 'Document'
+            ? ['09:00–10:00', '12:00–13:00', '16:00–17:00']
+            : ['08:00–09:00', '14:00–15:00', '19:00–20:00'];
+      }
+
+      // Today per hall/service counts → currentLoad
+      const todayAgg = (await this.collection('submissions').aggregate([
+        {$match: {createdAt: {$gte: todayStart, $lte: todayEnd}, submissionType: {$in: this.SERVICES}}},
+        {$group: {_id: {svc: '$submissionType', hall: '$hall'}, count: {$sum: 1}}},
+      ]).toArray()) as Array<{_id?: {svc?: unknown; hall?: unknown}; count?: unknown}>;
+
+      const todayCountsByHallSvc: Record<string, Record<ServiceKey, number>> = {};
+      for (const r of todayAgg) {
+        const hall = asStr(r?._id?.hall, '');
+        const svc = asStr(r?._id?.svc, '') as ServiceKey;
+        if (!hall || !(this.SERVICES as string[]).includes(svc)) continue;
+        if (!todayCountsByHallSvc[hall]) {
+          todayCountsByHallSvc[hall] = {Complaint: 0, Document: 0};
+        }
+        todayCountsByHallSvc[hall][svc] = asNum(r.count, 0);
+      }
+
+      // ---------- SERVICE DEMAND ----------
+      serviceDemand = serviceForecast.map<ServiceDemandCard>((pack) => {
+        const svc = asStr(pack.service, 'Unknown');
+        const forecastArr = asArr<ForecastPoint>(pack.forecast).map(fp => ({
+          date: asStr(fp.date, ''),
+          yhat: asNum(fp.yhat, 0),
+          yhat_lower: asNum(fp.yhat_lower, 0),
+          yhat_upper: asNum(fp.yhat_upper, 0),
+        }));
+
+        const total = forecastArr.reduce<number>((acc, d) => acc + asNum(d.yhat, 0), 0);
+
+        const widths = forecastArr.map((d) => {
+          const y = asNum(d.yhat, 0);
+          const u = asNum(d.yhat_upper, y);
+          return y > 0 ? (u - y) / y : 0.5;
+        });
+        const meanWidth = widths.length
+          ? widths.reduce<number>((acc, w) => acc + w, 0) / widths.length
+          : 0.4;
+        const confidence = clamp(Math.round(100 - 100 * meanWidth), 50, 95);
+
+        const staffSum = allocation
+          .filter((a) => asStr(a.service, '') === svc)
+          .reduce<number>((acc, a) => acc + asNum(a.recommended_staff ?? a.recommendedStaff, 0), 0);
+
+        const current =
+          svc === 'Complaint' || svc === 'Document'
+            ? yestCountsByService[svc]
+            : 0;
+
+        const peak =
+          svc === 'Complaint' || svc === 'Document'
+            ? peakHourByService[svc]
+            : ['09:00–10:00'];
+
+        return {
+          service: svc,
+          currentDemand: current,
+          predictedDemand: Number(total.toFixed(2)),
+          recommendedStaff: staffSum || 1,
+          confidence,
+          peakHours: peak,
+        };
+      });
+
+      topLevelPriorityServices = serviceDemand
+        .slice()
+        .sort((a, b) => b.predictedDemand - a.predictedDemand)
+        .map((s) => s.service)
+        .slice(0, 3);
+
+      // ---------- RESOURCE ALLOCATION ----------
+      // Group allocations by hall
+      const byHall = new Map<string, AllocationDoc[]>();
+      for (const row of allocation) {
+        const hall = asStr(row.hall, '');
+        if (!byHall.has(hall)) byHall.set(hall, []);
+        byHall.get(hall)!.push(row);
+      }
+
+      resourceAllocation = [];
+      for (const [hall, rows] of byHall.entries()) {
+        let staffHall = 0;
+        let effSum = 0;
+        let effCnt = 0;
+
+        const predMinutesBySvc: Record<ServiceKey, number> = {Complaint: 0, Document: 0};
+
+        const todayCounts = todayCountsByHallSvc[hall] ?? {Complaint: 0, Document: 0};
+        let currentMinutesNeeded =
+          todayCounts.Complaint * AHT.Complaint +
+          todayCounts.Document * AHT.Document;
+
+        for (const r of rows) {
+          const svc = asStr(r.service, '') as ServiceKey;
+          const recStaffSvc = asNum(r.recommended_staff ?? r.recommendedStaff, 0);
+          staffHall += recStaffSvc;
+
+          const eff = asNum(r.efficiency, 70);
+          effSum += eff;
+          effCnt += 1;
+
+          const predDemandSvc = asNum(r.predicted_demand ?? r.predictedDemand, 0);
+          if (svc === 'Complaint') predMinutesBySvc.Complaint += predDemandSvc * AHT.Complaint;
+          if (svc === 'Document') predMinutesBySvc.Document += predDemandSvc * AHT.Document;
+        }
+
+        const currentCapacity = Math.max(1, staffHall) * this.STAFF_DAY_CAPACITY_MIN;
+        const predictedCapacity = Math.max(1, staffHall) * this.STAFF_DAY_CAPACITY_MIN * Math.max(1, this.SLA_DAYS);
+
+        const predictedMinutesNeeded = predMinutesBySvc.Complaint + predMinutesBySvc.Document;
+
+        const currentLoad = Math.round(100 * currentMinutesNeeded / currentCapacity);
+        const predictedLoad = Math.round(100 * predictedMinutesNeeded / predictedCapacity);
+        const avgEff = effCnt ? Math.round(effSum / effCnt) : 70;
+
+        const priorityServices = (Object.entries(predMinutesBySvc) as Array<[ServiceKey, number]>)
+          .sort((a, b) => b[1] - a[1])
+          .map(([svc]) => svc)
+          .slice(0, 2);
+
+        resourceAllocation.push({
+          hall,
+          currentLoad: clamp(currentLoad, 0, 200),
+          predictedLoad: clamp(predictedLoad, 0, 200),
+          recommendedStaff: Math.max(1, Math.round(staffHall)),
+          efficiency: clamp(avgEff, 40, 100),
+          priorityServices,
         });
       }
 
-      if (Array.isArray(serviceForecast)) {
-        serviceDemand = serviceForecast.map((pack: AnyObject) => {
-          const forecastArr = (pack.forecast ?? []).map((d: AnyObject) => ({
-            date: String(d.date ?? ''),
-            yhat: Number(d.yhat ?? 0),
-            yhat_lower: Number(d.yhat_lower ?? 0),
-            yhat_upper: Number(d.yhat_upper ?? 0),
-          }));
+      // ---------- EMERGENCY ----------
+      emergencyPredictions = emergency.map<EmergencyCard>((e) => ({
+        type: asStr(e.class, '').toUpperCase(),
+        location: asStr(e.hall, ''),
+        probability: Math.round(100 * asNum(e.probability, 0)),
+        estimatedResponseTime: asNum(e.estimated_response_time_min, 0),
+        requiredResources: asArr<string>(e.required_resources),
+        preventiveMeasures: asArr<string>(e.preventive_measures),
+        peakHours: [],
+        priorityServices: [asStr(e.class, 'Unknown')],
+      }));
 
-          const total = forecastArr.reduce((a: number, d: AnyObject) => a + Number(d.yhat ?? 0), 0);
-          const svc = String(pack.service ?? 'Unknown');
-
-          // Provide a sensible default peak hours per service so UI can .map()
-          const defaultPeak =
-            svc.toLowerCase().includes('document') ? [9, 12, 16] : [8, 14, 19];
-
-          return {
-            service: svc,
-            predictedDemand: Number(total.toFixed(2)),
-            forecast: forecastArr,
-            // UI safety fields:
-            peakHours: defaultPeak,               // array for .map()
-            priorityServices: [svc],              // derive from service itself
-          };
-        });
-
-        // Generate a top-level priority list (first 3 highest-demand services)
-        topLevelPriorityServices = serviceDemand
-          .slice()
-          .sort((a, b) => (b.predictedDemand ?? 0) - (a.predictedDemand ?? 0))
-          .map(s => s.service)
-          .slice(0, 3);
-      }
-
-      if (Array.isArray(allocation)) {
-        resourceAllocation = allocation.map((a: AnyObject) => ({
-          hall: String(a.hall ?? ''),
-          service: String(a.service ?? ''),
-          predictedDemand: Number((a.predicted_demand ?? 0).toFixed(2)),
-          recommendedStaff: Number(a.recommended_staff ?? 1),
-          efficiency: Number(a.efficiency ?? 70),
-          bottlenecks: (a.bottlenecks ?? []) as string[],
-          // UI safety fields:
-          peakHours: [],                            // array for .map()
-          priorityServices: [String(a.service ?? 'Unknown')], // derive from service
-        }));
-      }
-
-      if (Array.isArray(emergency)) {
-        emergencyPredictions = emergency.map((e: AnyObject) => ({
-          type: String(e.class ?? ''),
-          location: String(e.hall ?? ''),
-          probability: Number(e.probability ?? 0),
-          estimatedResponseTime: Number(e.estimated_response_time_min ?? 0),
-          requiredResources: (e.required_resources ?? []) as string[],
-          preventiveMeasures: (e.preventive_measures ?? []) as string[],
-          // UI safety fields:
-          peakHours: [],                    // array for .map()
-          priorityServices: [String(e.class ?? 'Unknown')], // derive from class
-        }));
+      // ---------- Negative scenario showcase (non-persistent) ----------
+      if (this.DEBUG_VARIANCE) {
+        if (resourceAllocation.length) {
+          const j = Math.floor(Math.random() * resourceAllocation.length);
+          resourceAllocation[j].predictedLoad = clamp(resourceAllocation[j].predictedLoad + 25, 60, 140);
+          resourceAllocation[j].efficiency = clamp(resourceAllocation[j].efficiency - 15, 40, 90);
+          const k = (j + 1) % resourceAllocation.length;
+          resourceAllocation[k].currentLoad = clamp(resourceAllocation[k].currentLoad + 20, 30, 140);
+        }
+        if (serviceDemand.length) {
+          const idx = Math.floor(Math.random() * serviceDemand.length);
+          serviceDemand[idx].recommendedStaff = Math.max(serviceDemand[idx].recommendedStaff, 3);
+        }
       }
     } catch {
       // Swallow errors and return safe defaults
     }
 
-    // Respond with guaranteed arrays and a few aliases to be extra compatible
+    // Always return arrays to keep UI .map() safe
     return {
       overallEfficiency,
-      hotspots: hotspotsOut ?? EMPTY,
-      hotspotAreas: hotspotsOut ?? EMPTY, // alias used by some UIs
+      hotspots: hotspotsOut,
+      hotspotAreas: hotspotsOut, // alias used by some UIs
 
-      serviceDemand: serviceDemand ?? EMPTY,
-      serviceForecast: (serviceDemand ?? EMPTY).map((s: any) => ({
+      serviceDemand,
+      serviceForecast: serviceDemand.map((s) => ({
         service: s.service,
-        forecast: s.forecast ?? EMPTY,
-        // keep UI safe here too
-        peakHours: s.peakHours ?? [],
-        priorityServices: s.priorityServices ?? [],
+        forecast: [], // not used by cards; charts read /analytics/trends
+        peakHours: s.peakHours,
+        priorityServices: [s.service],
       })),
 
-      resourceAllocation: resourceAllocation ?? EMPTY,
-      emergencyPredictions: emergencyPredictions ?? EMPTY,
-      recommendations: recommendations ?? EMPTY,
+      resourceAllocation,
+      emergencyPredictions,
+      recommendations,
 
-      // NEW: top-level list so UIs that read e.priorityServices at root won’t crash
-      priorityServices: topLevelPriorityServices ?? [],
-
+      priorityServices: topLevelPriorityServices,
       lastUpdated,
       serverTime: new Date().toISOString(),
     };
@@ -203,37 +468,38 @@ export class AnalyticsController {
   @get('/analytics/trends')
   @response(200, {description: 'Trends'})
   async trends() {
-    let forecasts: any[] = [];
+    let forecasts: Array<{
+      service: string;
+      used_model: string;
+      forecast: Array<{date: string; yhat: number; yhat_lower: number; yhat_upper: number;}>;
+      peakHours: string[];
+      priorityServices: string[];
+    }> = [];
 
     try {
-      const packs = await this.collection(`predictions_service_forecast${this.suffix()}`)
+      const packs = (await this.collection(`predictions_service_forecast${this.suffix()}`)
         .find({})
         .sort({date_generated: -1})
-        .toArray();
+        .toArray()) as ServiceForecastDoc[];
 
-      if (Array.isArray(packs)) {
-        forecasts = packs.map((p: AnyObject) => ({
-          service: String(p.service ?? 'Unknown'),
-          used_model: String(p.used_model ?? 'baseline'),
-          forecast: (p.forecast ?? []).map((d: AnyObject) => ({
-            date: String(d.date ?? ''),
-            yhat: Number(d.yhat ?? 0),
-            yhat_lower: Number(d.yhat_lower ?? 0),
-            yhat_upper: Number(d.yhat_upper ?? 0),
-          })),
-          // Safety fields so charts that iterate arrays won't fail even if unused here
-          peakHours: [],
-          priorityServices: [String(p.service ?? 'Unknown')],
-        }));
-      }
+      forecasts = packs.map((p) => ({
+        service: asStr(p.service, 'Unknown'),
+        used_model: asStr(p.used_model, 'baseline'),
+        forecast: asArr<ForecastPoint>(p.forecast).map((d) => ({
+          date: asStr(d.date, ''),
+          yhat: asNum(d.yhat, 0),
+          yhat_lower: asNum(d.yhat_lower, 0),
+          yhat_upper: asNum(d.yhat_upper, 0),
+        })),
+        peakHours: [],
+        priorityServices: [asStr(p.service, 'Unknown')],
+      }));
     } catch {
-      // keep forecasts = []
+      // keep empty forecasts
     }
 
-    // Always return arrays so .map() never fails
-    const totalMean = forecasts.reduce(
-      (acc, pack) =>
-        acc + (pack.forecast ?? []).reduce((a: number, d: AnyObject) => a + Number(d.yhat ?? 0), 0),
+    const totalMean = forecasts.reduce<number>(
+      (acc, pack) => acc + pack.forecast.reduce<number>((a, d) => a + d.yhat, 0),
       0,
     );
 
@@ -243,8 +509,7 @@ export class AnalyticsController {
       data: forecasts,
       narrative: '7-day outlook based on last 28-day seasonal baseline.',
       stats: {comparedRange: 'last 28 days', totalMean: Number(totalMean.toFixed(2))},
-      // Also include a root-level safety array
-      priorityServices: forecasts.map(f => f.service).slice(0, 3),
+      priorityServices: forecasts.map((f) => f.service).slice(0, 3),
     };
   }
 }
