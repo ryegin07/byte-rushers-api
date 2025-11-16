@@ -134,4 +134,137 @@ export class StatsController {
 
     return { totalResidents, pending, completedToday, activeIssue, documents };
   }
+
+  @get('/stats/submissions-overview', {
+    responses: {
+      '200': {
+        description: 'Submissions overview for documents and complaints',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                oldestDate: {type: 'string', nullable: true},
+                from: {type: 'string'},
+                to: {type: 'string'},
+                document: {
+                  type: 'object',
+                  properties: {
+                    inProgress: {type: 'number'},
+                    completed: {type: 'number'},
+                  },
+                },
+                complaint: {
+                  type: 'object',
+                  properties: {
+                    inProgress: {type: 'number'},
+                    completed: {type: 'number'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  async submissionsOverview(
+    @param.query.string('from') fromQ?: string,
+    @param.query.string('to') toQ?: string,
+  ): Promise<{
+    oldestDate: string | null;
+    from: string;
+    to: string;
+    document: {inProgress: number; completed: number};
+    complaint: {inProgress: number; completed: number};
+  }> {
+    const parseDate = (v?: string): Date | undefined => {
+      if (!v) return undefined;
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? undefined : d;
+    };
+
+    const now = new Date();
+    const defaultFrom = new Date(now);
+    defaultFrom.setHours(0, 0, 0, 0);
+    const defaultTo = new Date(now);
+    defaultTo.setHours(23, 59, 59, 999);
+
+    const from = parseDate(fromQ) || defaultFrom;
+    const to = parseDate(toQ) || defaultTo;
+
+    // Load all submissions once, then classify by created vs completed within range
+    const fields = ['id', 'submissionType', 'status', 'createdAt', 'dateCompleted'] as any;
+    const all = await this.submissionRepo
+      .find({fields})
+      .catch(() => [] as Submission[]);
+
+    const norm = (v?: string) => (v || '').toString().trim().toLowerCase();
+    const isDoc = (t?: string) => norm(t) === 'document';
+    const isComplaint = (t?: string) => norm(t) === 'complaint';
+
+    const inRange = (value?: string | Date) => {
+      if (!value) return false;
+      const d = typeof value === 'string' ? new Date(value) : value;
+      if (isNaN(d.getTime())) return false;
+      return d >= from && d <= to;
+    };
+
+    let docCreated = 0;
+    let docCompleted = 0;
+    let complaintCreated = 0;
+    let complaintCompleted = 0;
+
+    for (const s of all as any[]) {
+      const status = norm(s.status);
+      const createdAt = s.createdAt;
+      const completedAt = s.dateCompleted;
+
+      if (isDoc(s.submissionType)) {
+        if (inRange(createdAt)) {
+          docCreated++;
+        }
+        if (status === 'completed' && inRange(completedAt)) {
+          docCompleted++;
+        }
+      } else if (isComplaint(s.submissionType)) {
+        if (inRange(createdAt)) {
+          complaintCreated++;
+        }
+        if (status === 'resolved' && inRange(completedAt)) {
+          complaintCompleted++;
+        }
+      }
+    }
+
+    const oldestArr = await this.submissionRepo
+      .find({
+        order: ['createdAt ASC'],
+        limit: 1,
+        fields: ['createdAt'] as any,
+      })
+      .catch(() => [] as Submission[]);
+      
+    const oldestRaw = oldestArr[0] as any;
+    const oldest =
+      oldestRaw && oldestRaw.createdAt
+        ? new Date(oldestRaw.createdAt)
+        : undefined;
+
+    return {
+      oldestDate: oldest ? oldest.toISOString() : null,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      document: {
+        inProgress: docCreated,
+        completed: docCompleted,
+      },
+      complaint: {
+        inProgress: complaintCreated,
+        completed: complaintCompleted,
+      },
+    };
+  }
+
 }
+
